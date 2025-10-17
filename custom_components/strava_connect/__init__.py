@@ -1,14 +1,15 @@
-"""Strava Home Assistant Custom Component"""
+"""Strava Connect Home Assistant custom component."""
 
 # generic imports
 import asyncio
 import json
 import logging
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
 from http import HTTPStatus
 from typing import Callable, Tuple
 
 from aiohttp.web import Request, Response, json_response
+import voluptuous as vol
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -20,26 +21,33 @@ from homeassistant.const import (
 )
 
 # HASS imports
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError, get_url
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 # custom module imports
+from .api import StravaApi
 from .config_flow import OAuth2FlowHandler
 from .const import (  # noqa: F401
+    ATTR_ACTIVITY_ID,
+    ATTR_GEAR_ID,
     AUTH_CALLBACK_PATH,
     CONF_ACTIVITY_TYPE_RIDE,
     CONF_ACTIVITY_TYPE_RUN,
     CONF_ACTIVITY_TYPE_SWIM,
     CONF_ATTR_COMMUTE,
     CONF_ATTR_END_LATLONG,
+    CONF_ATTR_POLYLINE,
     CONF_ATTR_PRIVATE,
     CONF_ATTR_SPORT_TYPE,
     CONF_ATTR_START_LATLONG,
-    CONF_ATTR_POLYLINE,
     CONF_CALLBACK_URL,
     CONF_GEOCODE_XYZ_API_KEY,
+    CONF_GEAR_BIKES,
+    CONF_GEAR_SHOES,
     CONF_IMG_UPDATE_EVENT,
     CONF_PHOTOS,
     CONF_SENSOR_ACTIVITY_COUNT,
@@ -68,15 +76,21 @@ from .const import (  # noqa: F401
     CONF_SUMMARY_RECENT,
     CONF_SUMMARY_YTD,
     CONFIG_IMG_SIZE,
+    COORDINATOR_NAME,
+    DATA_API,
+    DATA_COORDINATOR,
+    DATA_REMOVE_LISTENERS,
     DOMAIN,
     EVENT_ACTIVITIES_UPDATE,
     EVENT_ACTIVITY_IMAGES_UPDATE,
     EVENT_SUMMARY_STATS_UPDATE,
     FACTOR_KILOJOULES_TO_KILOCALORIES,
+    GEAR_UPDATE_INTERVAL_MINUTES,
     GEOCODE_XYZ_THROTTLED,
     MAX_NB_ACTIVITIES,
     OAUTH2_AUTHORIZE,
     OAUTH2_TOKEN,
+    SERVICE_SET_ACTIVITY_GEAR,
     UNKNOWN_AREA,
     WEBHOOK_SUBSCRIPTION_URL,
 )
@@ -84,6 +98,13 @@ from .const import (  # noqa: F401
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "camera"]
+
+SERVICE_SET_ACTIVITY_GEAR_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ACTIVITY_ID): vol.All(vol.Coerce(str), vol.Length(min=1)),
+        vol.Required(ATTR_GEAR_ID): vol.All(vol.Coerce(str), vol.Length(min=1)),
+    }
+)
 
 _PHOTOS_URL_TEMPLATE = (
     f"https://www.strava.com/api/v3/activities/%s/photos?size={CONFIG_IMG_SIZE}"
@@ -642,8 +663,8 @@ async def renew_webhook_subscription(
         ha_host = get_url(hass, allow_internal=False, allow_ip=False)
     except NoURLAvailableError:
         _LOGGER.error(
-            "Your Home Assistant Instance does not seem to have a public URL."
-            " The Strava Home Assistant integration requires a public URL"
+            "Your Home Assistant instance does not seem to have a public URL."
+            " The Strava Connect integration requires a public URL"
         )
         return
 
@@ -717,7 +738,7 @@ async def renew_webhook_subscription(
                 CONF_CLIENT_ID: config_data[CONF_CLIENT_ID],
                 CONF_CLIENT_SECRET: config_data[CONF_CLIENT_SECRET],
                 CONF_CALLBACK_URL: config_data[CONF_CALLBACK_URL],
-                "verify_token": "HA_STRAVA",
+                "verify_token": "STRAVA_CONNECT",
             },
         )
         if post_response.status == 201:
@@ -744,22 +765,30 @@ async def async_setup(
     return True
 
 
-async def strava_config_update_helper(hass, event):
+async def strava_config_update_helper(hass, entry):
     """
     helper function to handle updates to the integration-specific config
     options (i.e. OptionsFlow)
     """
-    _LOGGER.debug(f"Strava Config Update Handler fired: {event.data}")
+    _LOGGER.debug("Strava Config Update Handler fired: %s", entry.options)
+
+    domain_data = hass.data.get(DOMAIN, {})
+    coordinator = None
+    runtime_data = domain_data.get(entry.entry_id)
+    if runtime_data:
+        coordinator = runtime_data.get(DATA_COORDINATOR)
+
+    if coordinator:
+        await coordinator.async_request_refresh()
+
     hass.bus.fire(CONF_STRAVA_CONFIG_UPDATE_EVENT, {})
     return
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """
-    Set up Strava Home Assistant config entry initiated through the HASS-UI.
-    """
+    """Set up the Strava Connect config entry initiated through the UI."""
 
-    hass.data.setdefault(DOMAIN, {})
+    domain_data = hass.data.setdefault(DOMAIN, {})
 
     # OAuth Stuff
     try:
@@ -786,6 +815,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     await oauth_websession.async_ensure_token_valid()
 
+    strava_api = StravaApi(oauth_websession)
+
+    async def async_update_gear_data():
+        athlete = await strava_api.get_athlete()
+        return {
+            "athlete": athlete,
+            CONF_GEAR_SHOES: athlete.get(CONF_GEAR_SHOES, []),
+            CONF_GEAR_BIKES: athlete.get(CONF_GEAR_BIKES, []),
+        }
+
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=COORDINATOR_NAME,
+        update_method=async_update_gear_data,
+        update_interval=timedelta(minutes=GEAR_UPDATE_INTERVAL_MINUTES),
+    )
+
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except HomeAssistantError as err:
+        raise ConfigEntryNotReady(err) from err
+
+    runtime_data = {
+        DATA_COORDINATOR: coordinator,
+        DATA_API: strava_api,
+        DATA_REMOVE_LISTENERS: [],
+    }
+    domain_data[entry.entry_id] = runtime_data
+    remove_listeners = runtime_data[DATA_REMOVE_LISTENERS]
+
     # webhook view to get notifications for strava activity updates
     def strava_update_event_factory(data, event_type=CONF_STRAVA_DATA_UPDATE_EVENT):
         hass.bus.fire(event_type, data)
@@ -799,9 +859,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     hass.http.register_view(strava_webhook_view)
 
+    async def async_handle_set_activity_gear(call: ServiceCall):
+        activity_id = call.data[ATTR_ACTIVITY_ID]
+        gear_id = call.data[ATTR_GEAR_ID]
+        response = await strava_api.set_activity_gear(activity_id, gear_id)
+        if response.status not in (HTTPStatus.OK, HTTPStatus.CREATED):
+            raise HomeAssistantError(
+                f"Failed to update gear for activity {activity_id}: {response.status} "
+                f"{await response.text()}"
+            )
+        await coordinator.async_request_refresh()
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_ACTIVITY_GEAR):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_ACTIVITY_GEAR,
+            async_handle_set_activity_gear,
+            schema=SERVICE_SET_ACTIVITY_GEAR_SCHEMA,
+        )
+
     # event listeners
     async def strava_startup_functions():
         await strava_webhook_view.fetch_strava_data()
+        await coordinator.async_request_refresh()
         await renew_webhook_subscription(
             hass=hass, entry=entry, webhook_view=strava_webhook_view
         )
@@ -821,9 +901,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     async def async_strava_config_update_handler():
         """called when user changes sensor configs"""
         await strava_webhook_view.fetch_strava_data()
+        await coordinator.async_request_refresh()
         return
 
     def strava_config_update_handler(event):  # pylint: disable=unused-argument
+        hass.async_create_task(coordinator.async_request_refresh())
         asyncio.run_coroutine_threadsafe(
             async_strava_config_update_handler(), hass.loop
         )
@@ -841,35 +923,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             )
         if "unit_system" in event.data.keys():
             hass.async_create_task(strava_webhook_view.fetch_strava_data())
+            hass.async_create_task(coordinator.async_request_refresh())
+
+    def activities_update_handler(event):  # pylint: disable=unused-argument
+        hass.async_create_task(coordinator.async_request_refresh())
 
     # register event listeners
-    hass.data[DOMAIN]["remove_update_listener"] = []
-
-    # if hass.bus.async_listeners().get(EVENT_HOMEASSISTANT_START, 0) < 1:
-    hass.data[DOMAIN]["remove_update_listener"].append(
+    remove_listeners.append(
         hass.bus.async_listen(EVENT_HOMEASSISTANT_START, ha_start_handler)
     )
-
-    # if hass.bus.async_listeners().get(EVENT_CORE_CONFIG_UPDATE, 0) < 1:
-    hass.data[DOMAIN]["remove_update_listener"].append(
+    remove_listeners.append(
         hass.bus.async_listen(EVENT_CORE_CONFIG_UPDATE, core_config_update_handler)
     )
-
-    if hass.bus.async_listeners().get(CONF_STRAVA_RELOAD_EVENT, 0) < 1:
-        hass.data[DOMAIN]["remove_update_listener"].append(
-            hass.bus.async_listen(CONF_STRAVA_RELOAD_EVENT, component_reload_handler)
+    remove_listeners.append(
+        hass.bus.async_listen(CONF_STRAVA_RELOAD_EVENT, component_reload_handler)
+    )
+    remove_listeners.append(
+        hass.bus.async_listen(
+            CONF_STRAVA_CONFIG_UPDATE_EVENT, strava_config_update_handler
         )
-
-    if hass.bus.async_listeners().get(CONF_STRAVA_CONFIG_UPDATE_EVENT, 0) < 1:
-        hass.data[DOMAIN]["remove_update_listener"].append(
-            hass.bus.async_listen(
-                CONF_STRAVA_CONFIG_UPDATE_EVENT, strava_config_update_handler
-            )
-        )
-
-    hass.data[DOMAIN]["remove_update_listener"] = [
-        entry.add_update_listener(strava_config_update_helper)
-    ]
+    )
+    remove_listeners.append(
+        hass.bus.async_listen(EVENT_ACTIVITIES_UPDATE, activities_update_handler)
+    )
+    remove_listeners.append(entry.add_update_listener(strava_config_update_helper))
 
     await hass.async_create_task(
         hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -887,11 +964,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
     )
 
+    domain_data = hass.data.get(DOMAIN, {})
+    runtime_data = domain_data.get(entry.entry_id, {})
+
     try:
-        for remove_listener in hass.data[DOMAIN]["remove_update_listener"]:
+        for remove_listener in runtime_data.get(DATA_REMOVE_LISTENERS, []):
             remove_listener()
-    except ValueError as e:
-        _LOGGER.exception(f"Strava failed to remove listener", e)
+    except ValueError as err:
+        _LOGGER.exception("Strava failed to remove listener", err)
 
     # delete strava webhook subscription
     websession = async_get_clientsession(hass, verify_ssl=False)
@@ -941,7 +1021,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
     )
 
-    del hass.data[DOMAIN]
+    domain_data.pop(entry.entry_id, None)
+    if not domain_data:
+        hass.data.pop(DOMAIN, None)
+        hass.services.async_remove(DOMAIN, SERVICE_SET_ACTIVITY_GEAR)
+
     if unload_ok:
         del implementation
         del entry
