@@ -1,12 +1,27 @@
-"""Constants for the Strava Home Assistant integration."""
+"""Constants for the Strava Connect Home Assistant integration."""
 
-DOMAIN = "ha_strava"
-CONFIG_ENTRY_TITLE = "Strava"
+DOMAIN = "strava_connect"
+CONFIG_ENTRY_TITLE = "Strava Connect"
 
 # OAuth Specs
 AUTH_CALLBACK_PATH = "/auth/external/callback"
 OAUTH2_AUTHORIZE = "https://www.strava.com/oauth/authorize"
 OAUTH2_TOKEN = "https://www.strava.com/oauth/token"
+OAUTH_SCOPES = "read,profile:read_all,activity:read_all,activity:write"
+
+# Data storage keys
+DATA_COORDINATOR = "coordinator"
+DATA_API = "api"
+DATA_REMOVE_LISTENERS = "remove_update_listener"
+
+# Gear and services
+COORDINATOR_NAME = "strava_connect_gear"
+GEAR_UPDATE_INTERVAL_MINUTES = 15
+CONF_GEAR_SHOES = "shoes"
+CONF_GEAR_BIKES = "bikes"
+SERVICE_SET_ACTIVITY_GEAR = "set_activity_gear"
+ATTR_ACTIVITY_ID = "activity_id"
+ATTR_GEAR_ID = "gear_id"
 
 # Camera Config
 CONF_PHOTOS = "conf_photos"
@@ -36,12 +51,12 @@ STRAVA_ACTHLETE_BASE_URL = "https://www.strava.com/dashboard"
 # Event Specs
 CONF_STRAVA_DATA_UPDATE_EVENT = "strava_data_update"
 CONF_STRAVA_CONFIG_UPDATE_EVENT = "strava_config_update"
-CONF_STRAVA_RELOAD_EVENT = "ha_strava_reload"
-CONF_IMG_UPDATE_EVENT = "ha_strava_new_images"
-CONF_IMG_ROTATE_EVENT = "ha_strava_rotate_images"
-EVENT_ACTIVITIES_UPDATE = "ha_strava_activities_update"
-EVENT_ACTIVITY_IMAGES_UPDATE = "ha_strava_activity_images_update"
-EVENT_SUMMARY_STATS_UPDATE = "ha_strava_stats_update"
+CONF_STRAVA_RELOAD_EVENT = "strava_connect_reload"
+CONF_IMG_UPDATE_EVENT = "strava_connect_new_images"
+CONF_IMG_ROTATE_EVENT = "strava_connect_rotate_images"
+EVENT_ACTIVITIES_UPDATE = "strava_connect_activities_update"
+EVENT_ACTIVITY_IMAGES_UPDATE = "strava_connect_activity_images_update"
+EVENT_SUMMARY_STATS_UPDATE = "strava_connect_stats_update"
 
 # Sensor Specs
 CONF_SENSOR_ID = "id"

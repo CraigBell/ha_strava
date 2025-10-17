@@ -1,6 +1,6 @@
 set_activity_gear:
   name: Set Activity Gear
-  description: Set the gear (shoe) for an activity by id.
+  description: Assign a shoe or bike to an activity by its Strava activity ID.
   fields:
     activity_id:
       required: true
@@ -12,4 +12,3 @@ set_activity_gear:
       example: g23789926
       selector:
         text:
-
