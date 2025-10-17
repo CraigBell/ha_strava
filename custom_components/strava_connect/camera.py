@@ -62,15 +62,15 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async def image_update_listener(  # pylint: disable=inconsistent-return-statements
         now,
     ):  # pylint: disable=unused-argument
-        if len(ha_strava_config_entries) != 1:
+        if len(strava_config_entries) != 1:
             return -1
 
         for camera in cameras:
             await camera.rotate_img()
 
-    ha_strava_config_entries = hass.config_entries.async_entries(domain=DOMAIN)
+    strava_config_entries = hass.config_entries.async_entries(domain=DOMAIN)
     img_update_interval_seconds = int(
-        ha_strava_config_entries[0].options.get(
+        strava_config_entries[0].options.get(
             CONF_IMG_UPDATE_INTERVAL_SECONDS,
             CONF_IMG_UPDATE_INTERVAL_SECONDS_DEFAULT,
         )

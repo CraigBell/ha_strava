@@ -1,8 +1,7 @@
-"""Sensor platform for HA Strava"""
+"""Sensor platform for Strava Connect."""
 
 import logging
 
-# HASS imports
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -18,6 +17,9 @@ from homeassistant.const import (
     UnitOfSpeed,
     UnitOfTime,
 )
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import slugify
 from homeassistant.util.unit_conversion import DistanceConverter, SpeedConverter
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
@@ -49,6 +51,9 @@ from .const import (
     CONF_DISTANCE_UNIT_OVERRIDE,
     CONF_DISTANCE_UNIT_OVERRIDE_DEFAULT,
     CONF_DISTANCE_UNIT_OVERRIDE_METRIC,
+    CONF_DISTANCE_UNIT_OVERRIDE_IMPERIAL,
+    CONF_GEAR_BIKES,
+    CONF_GEAR_SHOES,
     CONF_SENSOR_ACTIVITY_COUNT,
     CONF_SENSOR_BIGGEST_ELEVATION_GAIN,
     CONF_SENSOR_BIGGEST_RIDE_DISTANCE,
@@ -69,6 +74,7 @@ from .const import (
     CONF_SENSOR_SPEED,
     CONF_SENSOR_TITLE,
     CONF_SENSORS,
+    CONF_STRAVA_CONFIG_UPDATE_EVENT,
     CONF_STRAVA_RELOAD_EVENT,
     CONF_SUMMARY_ALL,
     CONF_SUMMARY_RECENT,
@@ -76,6 +82,7 @@ from .const import (
     DEFAULT_NB_ACTIVITIES,
     DEVICE_CLASS_DISTANCE,
     DEVICE_CLASS_DURATION,
+    DATA_COORDINATOR,
     DOMAIN,
     EVENT_ACTIVITIES_UPDATE,
     EVENT_SUMMARY_STATS_UPDATE,
@@ -147,6 +154,36 @@ async def async_setup_entry(
                         summary_type=CONF_SUMMARY_ALL,
                     )
                 )
+
+    runtime_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+    coordinator = runtime_data.get(DATA_COORDINATOR)
+    if coordinator and coordinator.data:
+        shoes = coordinator.data.get(CONF_GEAR_SHOES, [])
+        if shoes:
+            entries.append(
+                StravaGearCatalogSensor(
+                    config_entry=config_entry,
+                    coordinator=coordinator,
+                )
+            )
+        for gear in shoes:
+            entries.append(
+                StravaGearDistanceSensor(
+                    config_entry=config_entry,
+                    coordinator=coordinator,
+                    gear=gear,
+                    gear_type="shoe",
+                )
+            )
+        for gear in coordinator.data.get(CONF_GEAR_BIKES, []):
+            entries.append(
+                StravaGearDistanceSensor(
+                    config_entry=config_entry,
+                    coordinator=coordinator,
+                    gear=gear,
+                    gear_type="bike",
+                )
+            )
 
     async_add_entities(entries)
 
@@ -347,6 +384,168 @@ class StravaSummaryStatsSensor(
 
     async def async_will_remove_from_hass(self):
         await super().async_will_remove_from_hass()
+
+
+class StravaGearCatalogSensor(CoordinatorEntity, SensorEntity):
+    """Sensor providing a catalog of Strava shoes."""
+
+    _attr_icon = "mdi:shoe-sneaker"
+    _attr_name = "Shoes catalog"
+    _attr_should_poll = False
+
+    def __init__(self, config_entry, coordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{config_entry.entry_id}_shoes_catalog"
+
+    @property
+    def native_value(self):
+        shoes = self.coordinator.data.get(CONF_GEAR_SHOES, []) if self.coordinator.data else []
+        return len(shoes)
+
+    @property
+    def extra_state_attributes(self):
+        shoes = self.coordinator.data.get(CONF_GEAR_SHOES, []) if self.coordinator.data else []
+        catalog = []
+        for gear in shoes:
+            catalog.append(
+                {
+                    "id": gear.get("id"),
+                    "name": gear.get("name"),
+                    "retired": gear.get("retired"),
+                    "primary": gear.get("primary"),
+                    "distance_km": gear.get("distance_km"),
+                }
+            )
+        return {"items": catalog}
+
+
+class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
+    """Sensor representing the lifetime distance of a Strava gear item."""
+
+    _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_has_entity_name = True
+    _attr_name = "Distance total"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, config_entry, coordinator, gear: dict, gear_type: str) -> None:
+        super().__init__(coordinator)
+        self._config_entry_id = config_entry.entry_id
+        self._gear_type = gear_type
+        gear_id = gear.get("id") or f"{gear_type}_{slugify(gear.get('name', 'gear'))}"
+        self._gear_id = str(gear_id)
+        self._initial_name = gear.get("name", "Strava Gear")
+        self._attr_unique_id = f"gear_{self._gear_id}_distance_total"
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.hass.bus.async_listen(
+                CONF_STRAVA_CONFIG_UPDATE_EVENT, self._handle_config_update
+            )
+        )
+
+    async def _handle_config_update(self, event):  # pylint: disable=unused-argument
+        self.async_write_ha_state()
+
+    def _gear_collection_key(self) -> str:
+        return CONF_GEAR_SHOES if self._gear_type == "shoe" else CONF_GEAR_BIKES
+
+    def _current_gear(self):
+        data = self.coordinator.data or {}
+        for gear in data.get(self._gear_collection_key(), []):
+            if str(gear.get("id")) == self._gear_id:
+                return gear
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self._current_gear() is not None
+
+    def _target_distance_unit(self) -> UnitOfLength:
+        entry = self.hass.config_entries.async_get_entry(self._config_entry_id)
+        override = (
+            entry.options.get(
+                CONF_DISTANCE_UNIT_OVERRIDE, CONF_DISTANCE_UNIT_OVERRIDE_DEFAULT
+            )
+            if entry
+            else CONF_DISTANCE_UNIT_OVERRIDE_DEFAULT
+        )
+
+        if override == CONF_DISTANCE_UNIT_OVERRIDE_METRIC:
+            return UnitOfLength.KILOMETERS
+        if override == CONF_DISTANCE_UNIT_OVERRIDE_IMPERIAL:
+            return UnitOfLength.MILES
+        if self.hass.config.units is US_CUSTOMARY_SYSTEM:
+            return UnitOfLength.MILES
+        return UnitOfLength.KILOMETERS
+
+    @property
+    def native_unit_of_measurement(self):
+        return self._target_distance_unit()
+
+    @property
+    def native_value(self):
+        gear = self._current_gear()
+        if not gear:
+            return None
+
+        distance_km = gear.get("distance_km")
+        if distance_km is None:
+            distance_meters = gear.get("distance_m")
+            if distance_meters is None:
+                return None
+            distance_km = distance_meters / 1000
+
+        target_unit = self._target_distance_unit()
+        if target_unit == UnitOfLength.MILES:
+            return round(
+                DistanceConverter.convert(
+                    distance_km, UnitOfLength.KILOMETERS, UnitOfLength.MILES
+                ),
+                2,
+            )
+        return round(distance_km, 2)
+
+    @property
+    def icon(self):
+        return "mdi:shoe-sneaker" if self._gear_type == "shoe" else "mdi:bike"
+
+    @property
+    def extra_state_attributes(self):
+        gear = self._current_gear()
+        if not gear:
+            return {"gear_id": self._gear_id, "gear_type": self._gear_type}
+
+        attrs = {
+            "gear_id": self._gear_id,
+            "gear_type": self._gear_type,
+            "primary": gear.get("primary", False),
+            "retired": gear.get("retired", False),
+            "brand_name": gear.get("brand_name"),
+            "model_name": gear.get("model_name"),
+            "description": gear.get("description"),
+            "distance_km": gear.get("distance_km"),
+            "distance_m": gear.get("distance_m"),
+            "last_activity_id": gear.get("last_activity_id"),
+            "last_activity_start_date": gear.get("last_activity_start_date"),
+            "resource_state": gear.get("resource_state"),
+        }
+        return {k: v for k, v in attrs.items() if v is not None}
+
+    @property
+    def device_info(self):
+        gear = self._current_gear() or {}
+        model_name = gear.get("model_name") or gear.get("name", self._initial_name)
+        if gear.get("brand_name") and gear.get("model_name"):
+            model = f"{gear['brand_name']} {gear['model_name']}"
+        else:
+            model = model_name
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._gear_id)},
+            name=gear.get("name", self._initial_name),
+            manufacturer="Strava",
+            model=model,
+        )
 
 
 class StravaStatsSensor(SensorEntity):  # pylint: disable=missing-class-docstring
