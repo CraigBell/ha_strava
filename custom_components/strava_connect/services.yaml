@@ -12,6 +12,3 @@ set_activity_gear:
       example: g23789926
       selector:
         text:
-refresh_gear:
-  name: Refresh Strava Gear
-  description: Request an immediate refresh of Strava gear devices and sensors.

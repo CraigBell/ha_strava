@@ -18,7 +18,6 @@ When configuring the Strava API application, set the **Authorization Callback Do
 - Automatically refresh entities whenever new activities are added, edited, or removed on Strava.
 - Expose **13 detailed sensor entities per activity**, ready for dashboards and automations.
 - Monitor the lifetime mileage of your **shoes and bikes** and adjust activity gear with a dedicated service.
-- Represent every **Strava shoe as a Home Assistant device** complete with lifetime distance sensors and status flags.
 
 <img src="img/strava_activity_device.png" width="50%"><img src="img/strava_summary_device.png" width="50%">
 
@@ -75,14 +74,6 @@ keep your gear assignments in sync.
 Navigate to `Settings` → `Devices & Services`, click **Add Integration**, search for **Strava Connect**, and follow the wizard.
 After entering your API credentials and authorizing access, entities will be created automatically.
 
-### Verify gear entities
-
-Once the first sync finishes, open **Settings → Devices & Services → Strava Connect** and confirm that each shoe from your
-Strava profile appears as its own device. Every shoe exposes a `Distance total` sensor, `Primary`/`Retired` binary sensors, and
-shared attributes such as brand, model, and the last activity that used it. The gear catalog sensor keeps track of how many
-shoes Home Assistant knows about and lists their current state. Mileage is tracked in kilometers internally and rendered in
-your preferred units, refreshing automatically after new activities or service calls.
-
 ## Configuration options
 
 The integration exposes several runtime options under `Settings` → `Devices & Services` → **Strava Connect** → **Configure**:
@@ -111,19 +102,9 @@ Provide an optional [geocode.xyz](https://geocode.xyz/) API key to avoid throttl
 
 ## Services
 
-Strava Connect registers the following services:
-
-- `strava_connect.set_activity_gear` – Assign a shoe or bike to one of your recent activities. Provide the Strava activity ID
-  and the desired gear ID from your athlete profile. After updating the gear, the integration refreshes entities automatically so
-  your dashboards stay in sync.
-- `strava_connect.refresh_gear` – Request an immediate refresh of the cached athlete and gear data. Use this when you make
-  changes directly on Strava and want the updated shoe mileage or retirement status right away.
-
-## Events
-
-Each time Strava Connect detects updated gear mileage it fires a `strava_connect_gear_updated` event that includes the gear
-ID, current distance in kilometers, and the last activity that touched the gear. Automations can listen for this event to
-schedule maintenance reminders or notifications when specific shoes cross a mileage threshold.
+Strava Connect registers the `strava_connect.set_activity_gear` service, which lets you assign a shoe or bike to any of your
+recent activities. Provide the Strava activity ID and the desired gear ID from your athlete profile. After updating the gear, the
+integration refreshes the gear sensors automatically so your dashboards stay in sync.
 
 ## Next steps before opening a pull request
 
@@ -136,8 +117,7 @@ end-to-end flow:
    Settings → Devices & Services, and confirm that the OAuth redirect finishes with the `read`, `profile:read_all`,
    `activity:read_all`, and `activity:write` scopes listed in the Strava consent dialog.
 3. **Verify entities and services** – after the initial sync completes, confirm that the activity sensors, gear mileage sensors,
-   shoe devices, and both the `strava_connect.set_activity_gear` and `strava_connect.refresh_gear` services all return data and
-   accept service calls.
+   and `strava_connect.set_activity_gear` service all return data and accept service calls.
 4. **Test the webhook refresh** – trigger a new activity in Strava (or edit an existing one) and ensure Home Assistant updates the
    matching entities without a manual refresh.
 

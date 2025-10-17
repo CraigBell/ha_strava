@@ -17,15 +17,11 @@ DATA_REMOVE_LISTENERS = "remove_update_listener"
 # Gear and services
 COORDINATOR_NAME = "strava_connect_gear"
 GEAR_UPDATE_INTERVAL_MINUTES = 15
-ATHLETE_REFRESH_INTERVAL_HOURS = 4
-GEAR_DETAIL_REFRESH_INTERVAL_MINUTES = 30
 CONF_GEAR_SHOES = "shoes"
 CONF_GEAR_BIKES = "bikes"
 SERVICE_SET_ACTIVITY_GEAR = "set_activity_gear"
-SERVICE_REFRESH_GEAR = "refresh_gear"
 ATTR_ACTIVITY_ID = "activity_id"
 ATTR_GEAR_ID = "gear_id"
-EVENT_GEAR_UPDATED = "strava_connect_gear_updated"
 
 # Camera Config
 CONF_PHOTOS = "conf_photos"

@@ -27,7 +27,6 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.util import dt as dt_util
 
 # custom module imports
 from .api import StravaApi
@@ -82,19 +81,15 @@ from .const import (  # noqa: F401
     DATA_COORDINATOR,
     DATA_REMOVE_LISTENERS,
     DOMAIN,
-    EVENT_GEAR_UPDATED,
     EVENT_ACTIVITIES_UPDATE,
     EVENT_ACTIVITY_IMAGES_UPDATE,
     EVENT_SUMMARY_STATS_UPDATE,
     FACTOR_KILOJOULES_TO_KILOCALORIES,
-    ATHLETE_REFRESH_INTERVAL_HOURS,
-    GEAR_DETAIL_REFRESH_INTERVAL_MINUTES,
     GEAR_UPDATE_INTERVAL_MINUTES,
     GEOCODE_XYZ_THROTTLED,
     MAX_NB_ACTIVITIES,
     OAUTH2_AUTHORIZE,
     OAUTH2_TOKEN,
-    SERVICE_REFRESH_GEAR,
     SERVICE_SET_ACTIVITY_GEAR,
     UNKNOWN_AREA,
     WEBHOOK_SUBSCRIPTION_URL,
@@ -102,7 +97,7 @@ from .const import (  # noqa: F401
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "binary_sensor", "camera"]
+PLATFORMS = ["sensor", "camera"]
 
 SERVICE_SET_ACTIVITY_GEAR_SCHEMA = vol.Schema(
     {
@@ -822,121 +817,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     strava_api = StravaApi(oauth_websession)
 
-    athlete_cache = None
-    athlete_cache_timestamp = None
-    gear_cache = {}
-    gear_cache_timestamp = {}
-    last_broadcast_snapshots = {}
-
     async def async_update_gear_data():
-        nonlocal athlete_cache
-        nonlocal athlete_cache_timestamp
-        nonlocal gear_cache
-        nonlocal gear_cache_timestamp
-        nonlocal last_broadcast_snapshots
-
-        now = dt_util.utcnow()
-
-        needs_athlete_refresh = (
-            athlete_cache is None
-            or athlete_cache_timestamp is None
-            or now - athlete_cache_timestamp >= timedelta(hours=ATHLETE_REFRESH_INTERVAL_HOURS)
-        )
-
-        if needs_athlete_refresh:
-            athlete_cache = await strava_api.get_athlete()
-            athlete_cache_timestamp = now
-
-        athlete = athlete_cache or {}
-        normalized_gears = {CONF_GEAR_SHOES: [], CONF_GEAR_BIKES: []}
-        active_ids = set()
-
-        for gear_type in (CONF_GEAR_SHOES, CONF_GEAR_BIKES):
-            for gear in athlete.get(gear_type, []) or []:
-                gear_id = str(gear.get("id") or gear.get("gear_id") or "")
-                if not gear_id:
-                    continue
-
-                active_ids.add(gear_id)
-                cached_detail = gear_cache.get(gear_id)
-                cached_timestamp = gear_cache_timestamp.get(gear_id)
-                needs_detail_refresh = (
-                    cached_detail is None
-                    or cached_timestamp is None
-                    or now - cached_timestamp
-                    >= timedelta(minutes=GEAR_DETAIL_REFRESH_INTERVAL_MINUTES)
-                    or cached_detail.get("resource_state") == 1
-                )
-
-                if needs_detail_refresh:
-                    try:
-                        detail = await strava_api.get_gear(gear_id)
-                    except HomeAssistantError as err:
-                        _LOGGER.warning("Failed to refresh gear %s: %s", gear_id, err)
-                        detail = cached_detail or {}
-                    else:
-                        gear_cache[gear_id] = detail
-                        gear_cache_timestamp[gear_id] = now
-                else:
-                    detail = cached_detail
-
-                detail = detail or {}
-                distance_m = detail.get("distance", gear.get("distance"))
-                distance_km = None
-                if distance_m is not None:
-                    distance_km = round(distance_m / 1000, 3)
-
-                normalized = {
-                    "id": gear_id,
-                    "type": gear_type,
-                    "name": detail.get("name") or gear.get("name") or "Strava Gear",
-                    "brand_name": detail.get("brand_name") or gear.get("brand_name"),
-                    "model_name": detail.get("model_name") or gear.get("model_name"),
-                    "primary": bool(detail.get("primary", gear.get("primary", False))),
-                    "retired": bool(detail.get("retired", gear.get("retired", False))),
-                    "distance_m": distance_m,
-                    "distance_km": distance_km,
-                    "description": detail.get("description") or gear.get("description"),
-                    "resource_state": detail.get("resource_state")
-                    or gear.get("resource_state"),
-                    "last_activity_id": detail.get("last_activity_id"),
-                    "last_activity_start_date": detail.get("last_activity_start_date"),
-                    "fetched_at": now.isoformat(),
-                }
-
-                normalized_gears[gear_type].append(normalized)
-
-        inactive_ids = set(gear_cache) - active_ids
-        for gear_id in inactive_ids:
-            gear_cache.pop(gear_id, None)
-            gear_cache_timestamp.pop(gear_id, None)
-            last_broadcast_snapshots.pop(gear_id, None)
-
-        for gear_collection in normalized_gears.values():
-            for gear in gear_collection:
-                snapshot = (
-                    gear.get("distance_km"),
-                    gear.get("last_activity_id"),
-                    gear.get("retired"),
-                )
-                if last_broadcast_snapshots.get(gear["id"]) != snapshot:
-                    hass.bus.async_fire(
-                        EVENT_GEAR_UPDATED,
-                        {
-                            "gear_id": gear["id"],
-                            "distance_km": gear.get("distance_km"),
-                            "last_activity_id": gear.get("last_activity_id"),
-                            "last_activity_start_date": gear.get("last_activity_start_date"),
-                            "retired": gear.get("retired"),
-                            "primary": gear.get("primary"),
-                        },
-                    )
-                    last_broadcast_snapshots[gear["id"]] = snapshot
-
+        athlete = await strava_api.get_athlete()
         return {
             "athlete": athlete,
-            CONF_GEAR_SHOES: normalized_gears[CONF_GEAR_SHOES],
-            CONF_GEAR_BIKES: normalized_gears[CONF_GEAR_BIKES],
+            CONF_GEAR_SHOES: athlete.get(CONF_GEAR_SHOES, []),
+            CONF_GEAR_BIKES: athlete.get(CONF_GEAR_BIKES, []),
         }
 
     coordinator = DataUpdateCoordinator(
@@ -990,16 +876,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             SERVICE_SET_ACTIVITY_GEAR,
             async_handle_set_activity_gear,
             schema=SERVICE_SET_ACTIVITY_GEAR_SCHEMA,
-        )
-
-    async def async_handle_refresh_gear(call: ServiceCall):  # pylint: disable=unused-argument
-        await coordinator.async_request_refresh()
-
-    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_GEAR):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REFRESH_GEAR,
-            async_handle_refresh_gear,
         )
 
     # event listeners
@@ -1149,7 +1025,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     if not domain_data:
         hass.data.pop(DOMAIN, None)
         hass.services.async_remove(DOMAIN, SERVICE_SET_ACTIVITY_GEAR)
-        hass.services.async_remove(DOMAIN, SERVICE_REFRESH_GEAR)
 
     if unload_ok:
         del implementation

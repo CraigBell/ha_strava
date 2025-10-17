@@ -19,7 +19,6 @@ from homeassistant.const import (
 )
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import slugify
 from homeassistant.util.unit_conversion import DistanceConverter, SpeedConverter
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
@@ -158,15 +157,7 @@ async def async_setup_entry(
     runtime_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
     coordinator = runtime_data.get(DATA_COORDINATOR)
     if coordinator and coordinator.data:
-        shoes = coordinator.data.get(CONF_GEAR_SHOES, [])
-        if shoes:
-            entries.append(
-                StravaGearCatalogSensor(
-                    config_entry=config_entry,
-                    coordinator=coordinator,
-                )
-            )
-        for gear in shoes:
+        for gear in coordinator.data.get(CONF_GEAR_SHOES, []):
             entries.append(
                 StravaGearDistanceSensor(
                     config_entry=config_entry,
@@ -386,55 +377,23 @@ class StravaSummaryStatsSensor(
         await super().async_will_remove_from_hass()
 
 
-class StravaGearCatalogSensor(CoordinatorEntity, SensorEntity):
-    """Sensor providing a catalog of Strava shoes."""
-
-    _attr_icon = "mdi:shoe-sneaker"
-    _attr_name = "Shoes catalog"
-    _attr_should_poll = False
-
-    def __init__(self, config_entry, coordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{config_entry.entry_id}_shoes_catalog"
-
-    @property
-    def native_value(self):
-        shoes = self.coordinator.data.get(CONF_GEAR_SHOES, []) if self.coordinator.data else []
-        return len(shoes)
-
-    @property
-    def extra_state_attributes(self):
-        shoes = self.coordinator.data.get(CONF_GEAR_SHOES, []) if self.coordinator.data else []
-        catalog = []
-        for gear in shoes:
-            catalog.append(
-                {
-                    "id": gear.get("id"),
-                    "name": gear.get("name"),
-                    "retired": gear.get("retired"),
-                    "primary": gear.get("primary"),
-                    "distance_km": gear.get("distance_km"),
-                }
-            )
-        return {"items": catalog}
-
-
 class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
     """Sensor representing the lifetime distance of a Strava gear item."""
 
     _attr_device_class = SensorDeviceClass.DISTANCE
     _attr_has_entity_name = True
-    _attr_name = "Distance total"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, config_entry, coordinator, gear: dict, gear_type: str) -> None:
         super().__init__(coordinator)
         self._config_entry_id = config_entry.entry_id
         self._gear_type = gear_type
-        gear_id = gear.get("id") or f"{gear_type}_{slugify(gear.get('name', 'gear'))}"
+        gear_id = gear.get("id")
+        if gear_id is None:
+            gear_id = f"{gear_type}_{gear.get('name', 'unknown')}"
         self._gear_id = str(gear_id)
         self._initial_name = gear.get("name", "Strava Gear")
-        self._attr_unique_id = f"gear_{self._gear_id}_distance_total"
+        self._attr_unique_id = f"strava_gear_{self._gear_id}_distance"
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -489,13 +448,11 @@ class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
         if not gear:
             return None
 
-        distance_km = gear.get("distance_km")
-        if distance_km is None:
-            distance_meters = gear.get("distance_m")
-            if distance_meters is None:
-                return None
-            distance_km = distance_meters / 1000
+        distance_meters = gear.get("distance")
+        if distance_meters is None:
+            return None
 
+        distance_km = distance_meters / 1000
         target_unit = self._target_distance_unit()
         if target_unit == UnitOfLength.MILES:
             return round(
@@ -505,6 +462,12 @@ class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
                 2,
             )
         return round(distance_km, 2)
+
+    @property
+    def name(self):
+        gear = self._current_gear()
+        display_name = gear.get("name") if gear else self._initial_name
+        return f"{display_name} distance"
 
     @property
     def icon(self):
@@ -520,14 +483,10 @@ class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
             "gear_id": self._gear_id,
             "gear_type": self._gear_type,
             "primary": gear.get("primary", False),
-            "retired": gear.get("retired", False),
             "brand_name": gear.get("brand_name"),
             "model_name": gear.get("model_name"),
             "description": gear.get("description"),
-            "distance_km": gear.get("distance_km"),
-            "distance_m": gear.get("distance_m"),
-            "last_activity_id": gear.get("last_activity_id"),
-            "last_activity_start_date": gear.get("last_activity_start_date"),
+            "distance_m": gear.get("distance"),
             "resource_state": gear.get("resource_state"),
         }
         return {k: v for k, v in attrs.items() if v is not None}
@@ -535,16 +494,11 @@ class StravaGearDistanceSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self):
         gear = self._current_gear() or {}
-        model_name = gear.get("model_name") or gear.get("name", self._initial_name)
-        if gear.get("brand_name") and gear.get("model_name"):
-            model = f"{gear['brand_name']} {gear['model_name']}"
-        else:
-            model = model_name
         return DeviceInfo(
-            identifiers={(DOMAIN, self._gear_id)},
+            identifiers={(DOMAIN, f"strava_gear_{self._gear_id}")},
             name=gear.get("name", self._initial_name),
-            manufacturer="Strava",
-            model=model,
+            manufacturer=gear.get("brand_name"),
+            model=gear.get("model_name"),
         )
 
 

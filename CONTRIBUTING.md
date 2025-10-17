@@ -35,13 +35,10 @@ Strava Connect integration stays reliable:
 2. Start Home Assistant (for example by running `hass` inside the devcontainer) and complete the Strava Connect config flow.
 3. Confirm the Strava authorization dialog lists the `read`, `profile:read_all`, `activity:read_all`, and `activity:write`
    scopes and that the redirect returns to Home Assistant successfully.
-4. After the first data sync, check that activity sensors, shoe devices (with distance/primary/retired entities), bike sensors,
-   and the photo camera populate with values.
+4. After the first data sync, check that activity sensors, gear distance sensors, and the photo camera populate with values.
 5. Call the `strava_connect.set_activity_gear` service from Developer Tools → Services and verify the gear assignment updates in
    both Home Assistant and the Strava website.
-6. Trigger the `strava_connect.refresh_gear` service and confirm it forces an immediate update of shoe mileage and binary
-   sensors.
-7. Record a new activity (or edit one) on Strava and confirm Home Assistant receives the webhook update (including a
-   `strava_connect_gear_updated` event) without needing a manual refresh.
+6. Record a new activity (or edit one) on Strava and confirm Home Assistant receives the webhook update without needing a manual
+   refresh.
 
 These steps mirror the recommended "next steps" in the README and ensure the integration is ready for a pull request.

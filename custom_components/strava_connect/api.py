@@ -26,18 +26,6 @@ class StravaApi:
             )
         return await response.json()
 
-    async def get_gear(self, gear_id: str) -> dict:
-        """Return detailed information about a specific gear item."""
-        response = await self._session.async_request(
-            "GET", f"{API_BASE}/gear/{gear_id}"
-        )
-        if response.status != HTTPStatus.OK:
-            raise HomeAssistantError(
-                f"Failed to fetch Strava gear {gear_id}: {response.status} "
-                f"{await response.text()}"
-            )
-        return await response.json()
-
     async def set_activity_gear(self, activity_id: int | str, gear_id: str):
         """Assign gear to the provided activity."""
         return await self._session.async_request(
